@@ -136,6 +136,7 @@ function encodeEntities(string) {
     "<": "&lt;",
     ">": "&gt;"
   };
+  if (!string) return "";
   return string.replace(/[&"'<>]/g, m => entities[m]);
 }
 

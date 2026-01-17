@@ -3,7 +3,7 @@
 
 const cluster = require("cluster");
 
-if (!cluster.isMaster) {
+if (!cluster.isPrimary) {
   const simulator = require("./simulator");
   const csvParser = require("./csv-parser");
   const fs = require("fs");
@@ -12,8 +12,17 @@ if (!cluster.isMaster) {
   const acsUrl = process.env["ACS_URL"];
   const dataModel = process.env["DATA_MODEL"];
   const serialNumber = process.env["SERIAL_NUMBER"];
+  const macAddress = process.env["MAC_ADDRESS"];
+  const defaultTimeout = process.env["DEFAULT_TIMEOUT"];
 
   let device;
+  console.log("Environment variables:", {
+    ACS_URL: acsUrl,
+    DATA_MODEL: dataModel,
+    SERIAL_NUMBER: serialNumber,
+    MAC_ADDRESS: macAddress,
+    DEFAULT_TIMEOUT: defaultTimeout
+  });
   const data = fs.readFileSync(dataModel);
   if (path.parse(dataModel).ext.toLowerCase() === '.csv') {
     const rows = csvParser.reduce(csvParser.parseCsv(data.toString()));
@@ -33,8 +42,7 @@ if (!cluster.isMaster) {
   else {
     device = JSON.parse(data);
   }
-
-  simulator.start(device, serialNumber, acsUrl);
+  simulator.start(device, serialNumber, macAddress, acsUrl, defaultTimeout);
   return;
 }
 
@@ -47,11 +55,13 @@ function resolvePath(p) {
 const program = require("commander")
   .version(pkg.version)
   .description(pkg.description)
-  .option("-u, --acs-url [url]", "ACS URL to contact (default: http://127.0.0.1:7547/)", "http://127.0.0.1:7547/")
+  .option("-u, --acs-url [url]", "ACS URL to contact (default: http://127.0.0.1:7547/)", "http://172.19.0.8:7547/")
   .option("-m, --data-model [filename]", "Data model template", resolvePath, "./data_model_202BC1-BM632w-8KA8WA1151100043.csv")
   .option("-p, --processes [count]", "Number of devices to simulate (default: 1)", parseFloat, 1)
   .option("-w, --wait [milliseconds]", "Waiting period between process spawning (default: 1000)", parseFloat, 1000)
   .option("-s, --serial [offset]", "Serial number offset (default: 0)", parseFloat, 0)
+  .option("-a, --mac-address [address]", "MAC address (default: 20:2B:C1:E0:69:69)", "20:2B:C1:E0:69:69")
+  .option("-t, --default-timeout [seconds]", "Time in between reconnects for reboot and factory reset (default: 10000)", parseFloat, 10)
   .parse(process.argv);
 
 if (!/^(http|https):\/\//.test(program.acsUrl)) {
@@ -59,27 +69,28 @@ if (!/^(http|https):\/\//.test(program.acsUrl)) {
   process.exit(1);
 }
 
-cluster.on("fork", function(worker) {
-  console.log(`Simulator ${worker.env["SERIAL_NUMBER"]} started`);
+cluster.on("fork", function (worker) {
+  console.log(`Simulator ${worker.env["SERIAL_NUMBER"]} (${worker.env["MAC_ADDRESS"]}) started`);
 });
 
-cluster.on("exit", function(worker, code, signal) {
-  console.log(`Simulator ${worker.env["SERIAL_NUMBER"]} died (${signal || code}). Restarting in 10 seconds...`)
-  setTimeout(function() {
+cluster.on("exit", function (worker, code, signal) {
+  console.log(`Simulator ${worker.env["SERIAL_NUMBER"]} (${worker.env["MAC_ADDRESS"]}) died (${signal || code}). Restarting in ${program.defaultTimeout} seconds...`)
+  setTimeout(function () {
     let newWorker = cluster.fork(worker.env);
     newWorker.env = worker.env;
-  }, 10000);
+  }, program.defaultTimeout * 1000);
 });
 
-
-for (let i = 0; i < program.processes; ++ i) {
-  setTimeout(function() {
+for (let i = 0; i < program.processes; ++i) {
+  setTimeout(function () {
     let env = {
       "SERIAL_NUMBER": `00000${program.serial + i}`.slice(-6),
+      "MAC_ADDRESS": program.macAddress.slice(0, -2) + i.toString().padStart(2, '0'),
       "ACS_URL": program.acsUrl,
       "DATA_MODEL": program.dataModel,
+      "DEFAULT_TIMEOUT": program.defaultTimeout * 1000
     };
     let worker = cluster.fork(env);
     worker.env = env;
-  }, i  * program.wait)
+  }, i * program.wait)
 }
