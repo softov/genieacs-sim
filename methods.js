@@ -174,35 +174,35 @@ function inform(device, event, callback) {
   ];
 
   // Check if there are pending transfers to send as TransferComplete (file download or upload or firmware upgrade)
-  const pendingTransfer = getPendingTransfers();
-  if (pendingTransfer) {
-    // Mark this as a TransferComplete session
-    device._transferCompleteSession = true;
+  // const pendingTransfer = getPendingTransfers();
+  // if (pendingTransfer) {
+  //   // Mark this as a TransferComplete session
+  //   device._transferCompleteSession = true;
 
-    // Start with required elements only
-    const transferCompleteChildren = [
-      xmlUtils.node("CommandKey", {}, xmlParser.encodeEntities(pendingTransfer.commandKey || "")),
-      xmlUtils.node("StartTime", {}, pendingTransfer.startTime.toISOString()),
-      xmlUtils.node("CompleteTime", {}, new Date().toISOString())
-    ];
+  //   // Start with required elements only
+  //   const transferCompleteChildren = [
+  //     xmlUtils.node("CommandKey", {}, xmlParser.encodeEntities(pendingTransfer.commandKey || "")),
+  //     xmlUtils.node("StartTime", {}, pendingTransfer.startTime.toISOString()),
+  //     xmlUtils.node("CompleteTime", {}, new Date().toISOString())
+  //   ];
 
-    // CONDITIONALLY add FaultStruct only if there's a real fault
-    if (pendingTransfer.faultCode && pendingTransfer.faultCode !== "0" && pendingTransfer.faultCode !== "") {
-      transferCompleteChildren.push(
-        xmlUtils.node("FaultStruct", {}, [
-          xmlUtils.node("FaultCode", {}, pendingTransfer.faultCode),
-          xmlUtils.node("FaultString", {}, xmlParser.encodeEntities(pendingTransfer.faultString || ""))
-        ])
-      );
-    }
+  //   // CONDITIONALLY add FaultStruct only if there's a real fault
+  //   if (pendingTransfer.faultCode && pendingTransfer.faultCode !== "0" && pendingTransfer.faultCode !== "") {
+  //     transferCompleteChildren.push(
+  //       xmlUtils.node("FaultStruct", {}, [
+  //         xmlUtils.node("FaultCode", {}, pendingTransfer.faultCode),
+  //         xmlUtils.node("FaultString", {}, xmlParser.encodeEntities(pendingTransfer.faultString || ""))
+  //       ])
+  //     );
+  //   }
 
-    const transferComplete = xmlUtils.node("cwmp:TransferComplete", {}, transferCompleteChildren);
-    informChildren.push(transferComplete);
+  //   const transferComplete = xmlUtils.node("cwmp:TransferComplete", {}, transferCompleteChildren);
+  //   informChildren.push(transferComplete);
 
-    if (device._pendingReboot) {
-      console.log(`⏳ TransferComplete sent, reboot will occur after session ends`);
-    }
-  }
+  //   if (device._pendingReboot) {
+  //     console.log(`⏳ TransferComplete sent, reboot will occur after session ends`);
+  //   }
+  // }
 
   let inform = xmlUtils.node("cwmp:Inform", {}, informChildren);
 
@@ -286,8 +286,15 @@ function GetParameterValues(device, request, callback) {
   let params = []
   for (let p of parameterNames) {
     let name = p.text;
-    let value = device[name][1];
-    let type = device[name][2];
+    let param = device[name];
+
+    // if (!param) {
+    //   console.log(`Parameter ${name} not found`);
+    //   continue;
+    // }
+
+    let value = param[1];
+    let type = param[2];
     let valueStruct = xmlUtils.node("ParameterValueStruct", {}, [
       xmlUtils.node("Name", {}, name),
       xmlUtils.node("Value", { "xsi:type": type }, xmlParser.encodeEntities(value))
@@ -322,6 +329,46 @@ function SetParameterValues(device, request, callback) {
           value = c;
           break;
       }
+    }
+
+    if (!device[name]) {
+      console.log(`Parameter ${name} not found`);
+
+      // <SOAP-ENV:Fault>
+      // <faultcode>Client</faultcode>
+      // <faultstring>CWMP fault</faultstring>
+      // <detail>
+      // <cwmp:Fault>
+      // <FaultCode>9003</FaultCode>
+      // <FaultString>Invalid arguments</FaultString>
+      // <SetParameterValuesFault>
+      // <ParameterName>Device.ManagementServer.PeriodicInformTime</ParameterName>
+      // <FaultCode>9006</FaultCode>
+      // <FaultString>Invalid parameter type</FaultString>
+      // </SetParameterValuesFault>
+      // </cwmp:Fault>
+      // </detail>
+      // </SOAP-ENV:Fault>
+
+      let response = xmlUtils.node("cwmp:Fault", {}, [
+        xmlUtils.node("FaultCode", {}, "Client"),
+        xmlUtils.node("FaultString", {}, xmlParser.encodeEntities("CWMP fault")),
+        xmlUtils.node("detail", {}, [
+          xmlUtils.node("cwmp:Fault", {}, [
+            xmlUtils.node("FaultCode", {}, "9003"),
+            xmlUtils.node("FaultString", {}, xmlParser.encodeEntities("Invalid arguments")),
+            xmlUtils.node("SetParameterValuesFault", {}, [
+              xmlUtils.node("ParameterName", {}, name),
+              xmlUtils.node("FaultCode", {}, "9006"),
+              xmlUtils.node("FaultString", {}, xmlParser.encodeEntities("Invalid parameter type"))
+            ])
+          ])
+        ])
+      ]);
+
+      // let response = xmlUtils.node("cwmp:SetParameterValuesResponse", {}, xmlUtils.node("Status", {}, "0"));
+
+      return callback(response);
     }
 
     device[name][1] = xmlParser.decodeEntities(value.text);
@@ -487,6 +534,9 @@ function downloadFile(device, commandKey, startTime, urlObj, dwInfo) {
   if (dwInfo.attempts > 5) {
     console.error(`❌ Download failed: Too many redirect/auth attempts`);
     queueTransferComplete(commandKey, startTime, "9010", "Too many attempts");
+    setTimeout(() => {
+      sim.startSession("7 TRANSFER COMPLETE");
+    }, transferCompleteDelayMs);
     return;
   }
 

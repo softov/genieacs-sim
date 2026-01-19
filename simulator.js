@@ -130,6 +130,7 @@ function startSession(event) { // called automatically after a timeout or when a
   const requestId = Math.random().toString(36).slice(-8);
   let xml = null;
   methods.inform(device, event, function (body) {
+    console.log(` startSession event: ${event}`);
     xml = createSoapDocument(requestId, body);
     sendRequest(xml, function (xml) {
       cpeRequest(xml);
@@ -172,6 +173,42 @@ function cpeRequest(requestXml) {
 
   // Now safe to parse the request
   let [requestId,] = getRequestIdAndBody(requestXml);
+
+  // Check if there are pending transfers to send as TransferComplete (file download or upload or firmware upgrade)
+  const pendingTransfer = methods.getPendingTransfers();
+  if (pendingTransfer) {
+    console.log(`cpeRequest pendingTransfer: ${pendingTransfer.commandKey}`);
+    // Mark this as a TransferComplete session
+    device._transferCompleteSession = true;
+
+    // Start with required elements only
+    const transferCompleteChildren = [
+      xmlUtils.node("CommandKey", {}, xmlParser.encodeEntities(pendingTransfer.commandKey || "")),
+      xmlUtils.node("StartTime", {}, pendingTransfer.startTime.toISOString()),
+      xmlUtils.node("CompleteTime", {}, new Date().toISOString())
+    ];
+
+    // CONDITIONALLY add FaultStruct only if there's a real fault
+    if (pendingTransfer.faultCode && pendingTransfer.faultCode !== "0" && pendingTransfer.faultCode !== "") {
+      transferCompleteChildren.push(
+        xmlUtils.node("FaultStruct", {}, [
+          xmlUtils.node("FaultCode", {}, pendingTransfer.faultCode),
+          xmlUtils.node("FaultString", {}, xmlParser.encodeEntities(pendingTransfer.faultString || ""))
+        ])
+      );
+    }
+
+    if (device._pendingReboot) {
+      console.log(`⏳ TransferComplete sent, reboot will occur after session ends`);
+    }
+
+    const transferComplete = xmlUtils.node("cwmp:TransferComplete", {}, transferCompleteChildren);
+    let xml = createSoapDocument(requestId, transferComplete);
+    sendRequest(xml, function (xml) {
+      handleMethod(xml);
+    });
+    return;
+  }
 
   // Reject requests if device is unavailable (rebooting, etc.)
   if (!acceptConnections) {
